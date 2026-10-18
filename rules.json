@@ -6,7 +6,8 @@
       "type": "modifyHeaders",
       "requestHeaders": [
         { "header": "Origin", "operation": "set", "value": "https://www.bahn.de" },
-        { "header": "Referer", "operation": "set", "value": "https://www.bahn.de/" }
+        { "header": "Referer", "operation": "set", "value": "https://www.bahn.de/" },
+        { "header": "Accept-Encoding", "operation": "set", "value": "gzip, deflate, br" }
       ]
     },
     "condition": {

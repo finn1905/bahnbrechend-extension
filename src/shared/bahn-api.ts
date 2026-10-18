@@ -920,6 +920,10 @@ async function callBahnApi(body: Record<string, unknown>): Promise<BahnApiRespon
 
     // Browser-realistic headers to avoid bot detection.
     // Origin + Referer are also enforced via declarativeNetRequest rules in manifest.
+    // rules.json also pins Accept-Encoding to exclude `zstd`: Akamai answers 403
+    // OPS_BLOCKED when Accept-Language is combined with zstd (what every current
+    // browser sends). Accept-Encoding is a forbidden fetch() header, so it can only
+    // be rewritten via DNR.
     const secChUa = typeof navigator !== "undefined" && "userAgentData" in navigator
       ? (navigator as unknown as { userAgentData: { brands: { brand: string; version: string }[] } })
           .userAgentData.brands.map(b => `"${b.brand}";v="${b.version}"`).join(", ")
