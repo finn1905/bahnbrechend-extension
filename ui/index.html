@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bahnbrechend – lokaler Test</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mut:#667085; --acc:#ec0016; --ok:#12805c; --line:#e3e6ea; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --card:#1d2025; --fg:#eceff3; --mut:#9aa3af; --line:#2c3138; --ok:#3ecf9a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,sans-serif; }
+  main { max-width:820px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 4px; } .sub { color:var(--mut); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .row { display:grid; grid-template-columns:1fr 1fr 160px; gap:12px; }
+  @media (max-width:640px) { .row { grid-template-columns:1fr; } }
+  label { font-size:12px; color:var(--mut); display:block; margin-bottom:4px; }
+  input { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); font:inherit; }
+  .ac { position:relative; }
+  .ac ul { position:absolute; z-index:5; left:0; right:0; top:100%; margin:2px 0 0; padding:0; list-style:none; background:var(--card); border:1px solid var(--line); border-radius:7px; max-height:260px; overflow:auto; }
+  .ac li { padding:8px 10px; cursor:pointer; } .ac li:hover { background:var(--bg); }
+  .picked { font-size:12px; color:var(--ok); margin-top:3px; min-height:16px; }
+  button { padding:9px 14px; border:0; border-radius:7px; background:var(--acc); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button.sec { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  button:disabled { opacity:.45; cursor:default; }
+  .actions { display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; align-items:center; }
+  .badge { font-size:12px; padding:3px 8px; border-radius:99px; border:1px solid var(--line); color:var(--mut); margin-left:auto; }
+  .badge.ok { color:var(--ok); border-color:var(--ok); } .badge.bad { color:var(--acc); border-color:var(--acc); }
+  .bar { height:8px; background:var(--line); border-radius:99px; overflow:hidden; margin:10px 0 6px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--acc); transition:width .3s; }
+  .mut { color:var(--mut); font-size:13px; }
+  .err { color:var(--acc); font-weight:600; }
+  .cfg { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
+  .cfg:first-child { border:0; padding:0; margin:0; }
+  .top { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  .price { font-size:20px; font-weight:700; } .old { text-decoration:line-through; color:var(--mut); }
+  .score { font-weight:700; } .score.hi { color:var(--ok); }
+  .seg { font-size:13px; color:var(--mut); margin:2px 0; }
+  a.book { display:inline-block; margin-top:8px; color:var(--acc); font-weight:600; }
+  pre { background:var(--bg); padding:10px; border-radius:7px; overflow:auto; font-size:12px; max-height:240px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bahnbrechend – lokaler Test</h1>
+  <p class="sub">Spricht mit der installierten Extension. Die Scans laufen komplett in deinem Browser.</p>
+
+  <div class="card">
+    <div class="row">
+      <div><label for="from">Von</label><div class="ac"><input id="from" autocomplete="off" placeholder="z. B. Berlin Hbf"><ul hidden></ul></div><div class="picked" id="fromPicked"></div></div>
+      <div><label for="to">Nach</label><div class="ac"><input id="to" autocomplete="off" placeholder="z. B. München Hbf"><ul hidden></ul></div><div class="picked" id="toPicked"></div></div>
+      <div><label for="date">Datum</label><input id="date" type="date"></div>
+    </div>
+    <div class="actions">
+      <button id="scan">Scan starten</button>
+      <button id="ext" class="sec" disabled>Score verbessern (erweitert)</button>
+      <button id="cancel" class="sec" disabled>Abbrechen</button>
+      <span class="badge" id="extStatus">Extension: prüfe…</span>
+    </div>
+  </div>
+
+  <div class="card" id="progressCard" hidden>
+    <div id="msg"></div>
+    <div class="bar"><i id="barFill"></i></div>
+    <div class="mut" id="sub"></div>
+  </div>
+
+  <div id="results"></div>
+  <details class="card" id="rawCard" hidden><summary class="mut">Rohdaten der letzten Nachricht</summary><pre id="raw"></pre></details>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const picked = { from: null, to: null };
+let reqId = null, running = false;
+
+// ---- Datum: Standard = in 14 Tagen
+const d0 = new Date(Date.now() + 14 * 864e5);
+$("date").value = d0.toISOString().slice(0, 10);
+
+// ---- Stationssuche (Autocomplete via lokalen Proxy)
+function setupAc(key) {
+  const input = $(key), list = input.parentElement.querySelector("ul");
+  let t;
+  input.addEventListener("input", () => {
+    picked[key] = null; $(key + "Picked").textContent = ""; updateButtons();
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      const q = input.value.trim();
+      if (q.length < 2) { list.hidden = true; return; }
+      try {
+        const r = await (await fetch("/api/stations?q=" + encodeURIComponent(q))).json();
+        list.innerHTML = "";
+        (Array.isArray(r) ? r : []).forEach((s) => {
+          const li = document.createElement("li");
+          li.textContent = s.name;
+          li.onclick = () => {
+            picked[key] = { id: s.id, name: s.name };
+            input.value = s.name; list.hidden = true;
+            $(key + "Picked").textContent = "✓ " + s.name + " (" + s.id + ")";
+            updateButtons();
+          };
+          list.appendChild(li);
+        });
+        list.hidden = !list.children.length;
+      } catch { list.hidden = true; }
+    }, 250);
+  });
+  document.addEventListener("click", (e) => { if (!input.parentElement.contains(e.target)) list.hidden = true; });
+}
+setupAc("from"); setupAc("to");
+
+// ---- Extension-Kommunikation
+function send(type, payload) {
+  reqId = crypto.randomUUID();
+  window.postMessage({ source: "bahnbrechend-web", requestId: reqId, type, payload }, location.origin);
+}
+function ping() {
+  const id = crypto.randomUUID();
+  window.postMessage({ source: "bahnbrechend-web", requestId: id, type: "ping", payload: {} }, location.origin);
+}
+let pong = false;
+ping(); const pingTimer = setInterval(() => { if (!pong) ping(); }, 1500);
+setTimeout(() => { if (!pong) setExt(false); }, 3000);
+function setExt(ok) {
+  const b = $("extStatus");
+  b.textContent = ok ? "Extension: verbunden" : "Extension nicht gefunden (Dev-Build geladen? Seite neu laden)";
+  b.className = "badge " + (ok ? "ok" : "bad");
+  updateButtons();
+}
+function updateButtons() {
+  const ready = pong && picked.from && picked.to && $("date").value;
+  $("scan").disabled = !ready || running;
+  $("ext").disabled = !ready || running || !lastResult;
+  $("cancel").disabled = !running;
+}
+
+let lastResult = null;
+window.addEventListener("message", (e) => {
+  if (e.source !== window || !e.data || e.data.source !== "bahnbrechend-ext") return;
+  const m = e.data;
+  if (m.type === "pong") { pong = true; clearInterval(pingTimer); setExt(true); return; }
+  if (m.requestId !== reqId) return;
+  $("raw").textContent = JSON.stringify(m, null, 2).slice(0, 20000); $("rawCard").hidden = false;
+  if (m.type === "progress") showProgress(m.payload);
+  else if (m.type === "result") { lastResult = m.payload; renderResult(m.payload); }
+  else if (m.type === "error") { running = false; $("msg").innerHTML = '<span class="err">Fehler: ' + esc(m.payload.message) + "</span>"; updateButtons(); }
+  else if (m.type === "scan_complete") {
+    running = false;
+    const err = m.payload.scanData && m.payload.scanData.errorMessage;
+    $("msg").innerHTML = err ? '<span class="err">Fehler: ' + esc(err) + "</span>" : "Scan abgeschlossen.";
+    $("barFill").style.width = err ? "0" : "100%";
+    updateButtons();
+  }
+});
+
+function showProgress(p) {
+  $("progressCard").hidden = false;
+  $("msg").textContent = p.message || "";
+  $("sub").textContent = (p.subMessage || "") + (p.apiCallsDone != null ? "  · API-Calls: " + p.apiCallsDone : "");
+  if (p.apiCallsEstimatedTotal) $("barFill").style.width = Math.min(99, (p.apiCallsDone / p.apiCallsEstimatedTotal) * 100) + "%";
+}
+
+function start(type) {
+  running = true; updateButtons();
+  if (type === "scan_start") { lastResult = null; $("results").innerHTML = ""; }
+  $("progressCard").hidden = false; $("msg").textContent = "Starte…"; $("barFill").style.width = "0";
+  send(type, { fromId: picked.from.id, toId: picked.to.id, date: $("date").value, topZPairs: [] });
+  lastParams = { from: picked.from, to: picked.to, date: $("date").value };
+}
+let lastParams = null;
+$("scan").onclick = () => start("scan_start");
+$("ext").onclick = () => start("scan_start_extended");
+$("cancel").onclick = () => { send("scan_cancel", {}); running = false; $("msg").textContent = "Abgebrochen."; updateButtons(); };
+$("date").addEventListener("change", updateButtons);
+
+// ---- Ergebnis-Rendering
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const eur = (n) => n.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+const hm = (iso) => iso ? new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "?";
+
+function bookingLink(from, to, via, date, dep) {
+  const d = new Date(dep || date);
+  const p = Object.fromEntries(new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Berlin", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(d).map((x) => [x.type, x.value]));
+  const iso = `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:00`;
+  const hz = via.slice(0, 2).map((s) => [`A=1@O=${s.name}@L=${s.id}@`, s.name, 2]);
+  const q = [`sts=true`, `so=${encodeURIComponent(from.name)}`, `zo=${encodeURIComponent(to.name)}`, `kl=2`, `r=13:16:KLASSENLOS:1`,
+    `soid=${encodeURIComponent("O=" + from.name)}`, `zoid=${encodeURIComponent("O=" + to.name)}`, `hd=${encodeURIComponent(iso)}`, `hza=D`,
+    `hz=${encodeURIComponent(JSON.stringify(hz))}`, `ar=false`, `s=true`, `d=false`, `fm=false`, `bp=false`];
+  return "https://www.bahn.de/buchung/fahrplan/suche#" + q.join("&");
+}
+
+function renderResult(r) {
+  const cfgs = (r.configs || []).slice().sort((a, b) => b.score - a.score || a.totalPrice - b.totalPrice);
+  let h = `<div class="card"><div class="top"><b>${cfgs.length} Ergebnis(se)</b>
+    <span class="mut">günstigster Preis ohne Trick: ${r.pMin ? eur(r.pMin) : "–"}</span>
+    ${r.isExtendedResult ? '<span class="mut">· erweiterter Scan</span>' : ""}
+    ${r.allReinFV ? '<span class="mut">· nur Fernverkehr, nicht optimierbar</span>' : ""}
+    ${r.nearDateWarning ? '<span class="mut">· Datum sehr nah, wenige Sparpreise</span>' : ""}</div></div>`;
+  cfgs.forEach((c) => {
+    const via = (c.viaStops || []).map((s) => s.name).join(" + ") || "—";
+    const dep = c.realSegments && c.realSegments[0] && c.realSegments[0].departure;
+    h += `<div class="card cfg"><div class="top">
+      <span class="price">${eur(c.totalPrice)}</span>
+      ${c.originalPrice ? `<span class="old">${eur(c.originalPrice)}</span>` : ""}
+      <span class="score ${c.score >= 0.9 ? "hi" : ""}">Score ${(c.score * 100).toFixed(0)}%</span>
+      <span class="mut">Via: ${esc(via)}</span></div>`;
+    (c.realSegments || []).forEach((s) => {
+      h += `<div class="seg">${hm(s.departure)} ${esc(s.from.name)} → ${hm(s.arrival)} ${esc(s.to.name)} · ${esc(s.trainName)}${s.transferMinutes != null ? " · Umstieg " + s.transferMinutes + " min" : ""} · ${eur(s.price)}</div>`;
+    });
+    if (lastParams && c.viaStops && c.viaStops.length)
+      h += `<a class="book" target="_blank" rel="noopener" href="${esc(bookingLink(lastParams.from, lastParams.to, c.viaStops, lastParams.date, dep))}">Bei bahn.de mit Zwischenhalten öffnen ↗</a>`;
+    h += "</div>";
+  });
+  $("results").innerHTML = h;
+}
+</script>
+</body>
+</html>
